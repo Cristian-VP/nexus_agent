@@ -1,0 +1,54 @@
+# ╔══════════════════════════════════════════════════════════════╗
+# ║         NEXUS AGENT — Docker Compose                        ║
+# ║         OpenClaw Gateway (imagen oficial)                   ║
+# ║         Proyecto educativo — uso local únicamente           ║
+# ╚══════════════════════════════════════════════════════════════╝
+
+services:
+  openclaw-gateway:
+    image: ghcr.io/openclaw/openclaw:latest
+    container_name: nexus-agent-gateway
+    environment:
+      HOME: /home/node
+      TERM: xterm-256color
+      # Token de seguridad del gateway (generado en el onboarding)
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+      # Desactivar Bonjour/mDNS dentro del contenedor
+      OPENCLAW_DISABLE_BONJOUR: "1"
+      # Zona horaria
+      TZ: ${OPENCLAW_TZ:-Europe/Madrid}
+    volumes:
+      # Persistencia de configuración de OpenClaw
+      - ./config:/home/node/.openclaw
+      # Workspace del agente (ficheros, memoria)
+      - ./workspace:/home/node/.openclaw/workspace
+    extra_hosts:
+      # Permite al contenedor llegar al host (para modelos locales como Ollama)
+      - "host.docker.internal:host-gateway"
+    ports:
+      # Control UI + API del gateway
+      - "18789:18789"
+    init: true
+    restart: unless-stopped
+    command:
+      [
+        "node",
+        "dist/index.js",
+        "gateway",
+        "--bind",
+        "lan",
+        "--port",
+        "18789",
+      ]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:18789/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

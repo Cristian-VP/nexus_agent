@@ -1,0 +1,17 @@
+# Dependencias Node (si alguien clona y hace npm install)
+node_modules/
+
+# Variables de entorno con secretos — NUNCA al repositorio
+.env
+
+# Datos persistentes del agente (generados en runtime)
+config/
+workspace/
+
+# Excepciones: mantener los marcadores de directorio
+!config/.gitkeep
+!workspace/.gitkeep
+
+# Logs y temporales
+*.log
+.DS_Store
