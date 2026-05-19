@@ -11,23 +11,22 @@ services:
     environment:
       HOME: /home/node
       TERM: xterm-256color
-      # Token de seguridad del gateway (generado en el onboarding)
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
-      # Desactivar Bonjour/mDNS dentro del contenedor
+      # Optional provider API keys (set in your environment or .env file)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_ORG: ${OPENAI_ORG:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      HUGGINGFACE_API_KEY: ${HUGGINGFACE_API_KEY:-}
       OPENCLAW_DISABLE_BONJOUR: "1"
-      # Zona horaria
       TZ: ${OPENCLAW_TZ:-Europe/Madrid}
     volumes:
-      # Persistencia de configuración de OpenClaw
       - ./config:/home/node/.openclaw
-      # Workspace del agente (ficheros, memoria)
       - ./workspace:/home/node/.openclaw/workspace
     extra_hosts:
-      # Permite al contenedor llegar al host (para modelos locales como Ollama)
       - "host.docker.internal:host-gateway"
-    ports:
-      # Control UI + API del gateway
-      - "18789:18789"
+    expose:
+      - "18789"
     init: true
     restart: unless-stopped
     command:
@@ -52,3 +51,125 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    networks:
+      - nexus-agent-net
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: nexus-agent-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nexus_agent}
+      POSTGRES_USER: ${POSTGRES_USER:-nexus_agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexus_agent_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend-bridge/sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexus_agent} -d ${POSTGRES_DB:-nexus_agent}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - nexus-agent-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: nexus-agent-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - nexus-agent-net
+
+  backend-bridge:
+    build:
+      context: ./backend-bridge
+    container_name: nexus-agent-backend-bridge
+    environment:
+      BACKEND_PORT: 4000
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      BACKEND_URL: ${BACKEND_URL:-http://backend-bridge:4000}
+      OPENCLAW_GATEWAY_URL: ${OPENCLAW_GATEWAY_URL:-http://nexus-agent-gateway:18789}
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+      DATABASE_URL: ${DATABASE_URL:-postgres://nexus_agent:nexus_agent_password@postgres:5432/nexus_agent}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      SESSION_SECRET: ${SESSION_SECRET:-change-me-in-production}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-change-me-in-production}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-https://api.opencode.com/v1}
+      OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:3000/api/auth/google/callback}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      OAUTH_STATE_TTL_SECONDS: ${OAUTH_STATE_TTL_SECONDS:-600}
+      GOOGLE_REFRESH_LEEWAY_SECONDS: ${GOOGLE_REFRESH_LEEWAY_SECONDS:-60}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      openclaw-gateway:
+        condition: service_healthy
+    ports:
+      - "4000:4000"
+    expose:
+      - "4000"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - nexus-agent-net
+
+  frontend-ui:
+    build:
+      context: ./frontend-ui
+    container_name: nexus-agent-frontend-ui
+    environment:
+      HOSTNAME: 0.0.0.0
+      BACKEND_BRIDGE_URL: ${BACKEND_BRIDGE_URL:-http://backend-bridge:4000}
+      NEXT_TELEMETRY_DISABLED: "1"
+      PORT: 3000
+    depends_on:
+      backend-bridge:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - nexus-agent-net
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  nexus-agent-net:
+    driver: bridge

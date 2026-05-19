@@ -8,6 +8,14 @@ node_modules/
 config/
 workspace/
 
+# Dependencias y builds de los nuevos microservicios
+backend-bridge/node_modules/
+backend-bridge/dist/
+frontend-ui/node_modules/
+frontend-ui/.next/
+frontend-ui/out/
+*.tsbuildinfo
+
 # Excepciones: mantener los marcadores de directorio
 !config/.gitkeep
 !workspace/.gitkeep
