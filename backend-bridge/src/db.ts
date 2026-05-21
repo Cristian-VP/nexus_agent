@@ -249,3 +249,66 @@ export async function saveWorkspaceSnapshot(
     [userId, JSON.stringify(snapshot)]
   );
 }
+
+const SENSITIVE_FIELD_REDACTIONS: Record<string, string[]> = {
+  gmail_request_send_email: ["body"],
+  gmail_create_draft: ["body"],
+  create_calendar_event: ["description", "location"],
+  move_calendar_event: ["description", "location"],
+};
+
+function sanitizeParameters(
+  toolName: string,
+  args: Record<string, unknown>
+): Record<string, unknown> {
+  const sensitiveFields = SENSITIVE_FIELD_REDACTIONS[toolName];
+  if (!sensitiveFields || sensitiveFields.length === 0) {
+    return args;
+  }
+
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (sensitiveFields.includes(key)) {
+      sanitized[key] = "[REDACTED]";
+    } else {
+      sanitized[key] = value;
+    }
+  }
+  return sanitized;
+}
+
+export async function createAuditLog(
+  userId: string,
+  toolName: string,
+  parameters: Record<string, unknown>,
+  status: string,
+  errorDetails?: string
+): Promise<string> {
+  const sanitized = sanitizeParameters(toolName, parameters);
+
+  const result = await pool.query<{ id: string }>(
+    `
+      INSERT INTO agent_audit_logs (google_user_id, tool_name, parameters_sanitized, status, error_details)
+      VALUES ($1, $2, $3::jsonb, $4, $5)
+      RETURNING id
+    `,
+    [userId, toolName, JSON.stringify(sanitized), status, errorDetails ?? null]
+  );
+
+  return result.rows[0].id;
+}
+
+export async function updateAuditLogStatus(
+  logId: string,
+  newStatus: string,
+  errorDetails?: string
+): Promise<void> {
+  await pool.query(
+    `
+      UPDATE agent_audit_logs
+      SET status = $2, error_details = $3
+      WHERE id = $1
+    `,
+    [logId, newStatus, errorDetails ?? null]
+  );
+}

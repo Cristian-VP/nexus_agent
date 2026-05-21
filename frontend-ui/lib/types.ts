@@ -6,11 +6,22 @@ export type AuthenticatedUser = {
   picture: string | null;
 };
 
+export type ActionRequired = {
+  type: "action_required";
+  actionId: string;
+  details: {
+    to: string;
+    subject: string;
+  };
+};
+
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
   streaming: boolean;
+  action?: ActionRequired;
+  actionStatus?: "pending" | "sent" | "aborted" | "error";
 };
 
 export type WorkspaceSnapshot = {

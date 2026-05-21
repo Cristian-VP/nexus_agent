@@ -3,15 +3,16 @@ import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import session from "express-session";
 import pgSession from "connect-pg-simple";
+import { google } from "googleapis";
 import { config } from "./config";
-import { ensureRedisConnected, closeRedis } from "./redis";
+import { ensureRedisConnected, closeRedis, redis } from "./redis";
 import {
   completeOAuthLogin,
   createOAuthStateRecord,
   ensureFreshGoogleTokens,
   loadPrincipalFromSession
 } from "./auth";
-import { getWorkspaceSnapshot, pool, saveWorkspaceSnapshot } from "./db";
+import { getWorkspaceSnapshot, pool, saveWorkspaceSnapshot, updateAuditLogStatus } from "./db";
 import { proxyChatToOpenClaw } from "./openclaw";
 
 type SessionData = session.Session & {
@@ -245,6 +246,96 @@ async function main(): Promise<void> {
     res.json(snapshot);
   });
 
+  app.post("/api/workspace/action/confirm", async (req, res, next) => {
+    try {
+      const principal = await loadPrincipalFromSession(req);
+      if (!principal) {
+        res.status(401).json({ error: "unauthenticated" });
+        return;
+      }
+
+      const body = req.body as { actionId?: string; approved?: boolean };
+      const actionId = body.actionId;
+      const approved = body.approved;
+
+      if (!actionId || typeof approved !== "boolean") {
+        res.status(400).json({ error: "actionId_and_approved_required" });
+        return;
+      }
+
+      const key = `action:${actionId}`;
+      const rawPayload = await redis.get(key);
+      if (!rawPayload) {
+        res.status(404).json({ error: "action_not_found_or_expired" });
+        return;
+      }
+
+      const parsed = JSON.parse(rawPayload) as {
+        to: string;
+        subject: string;
+        body: string;
+        userId: string;
+        auditLogId?: string;
+      };
+
+      if (parsed.userId !== principal.id) {
+        res.status(403).json({ error: "action_belongs_to_different_user" });
+        return;
+      }
+
+      if (!approved) {
+        await redis.del(key);
+        if (parsed.auditLogId) {
+          await updateAuditLogStatus(parsed.auditLogId, "REJECTED");
+        }
+        res.json({ status: "aborted", actionId });
+        return;
+      }
+
+      try {
+        const tokens = await ensureFreshGoogleTokens(principal.id);
+
+        const oauth2Client = new google.auth.OAuth2();
+        oauth2Client.setCredentials({ access_token: tokens.accessToken });
+        const gmail = google.gmail({ version: "v1", auth: oauth2Client });
+
+        const rfc2822 = [
+          `To: ${parsed.to}`,
+          `Subject: ${parsed.subject}`,
+          "Content-Type: text/plain; charset=UTF-8",
+          "MIME-Version: 1.0",
+          "",
+          parsed.body,
+        ].join("\r\n");
+
+        const encoded = Buffer.from(rfc2822).toString("base64url");
+
+        await gmail.users.messages.send({
+          userId: "me",
+          requestBody: { raw: encoded },
+        });
+
+        await redis.del(key);
+        if (parsed.auditLogId) {
+          await updateAuditLogStatus(parsed.auditLogId, "APPROVED");
+        }
+
+        res.json({ status: "sent", actionId });
+      } catch (sendError) {
+        if (parsed.auditLogId) {
+          await updateAuditLogStatus(
+            parsed.auditLogId,
+            "FAILED",
+            sendError instanceof Error ? sendError.message : "Unknown send error"
+          );
+        }
+        throw sendError;
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post("/api/chat", async (req, res, next) => {
     try {
       const principal = await loadPrincipalFromSession(req);
@@ -255,11 +346,17 @@ async function main(): Promise<void> {
 
       const input = req.body as {
         message?: string;
+        messages?: Array<{ role: string; content: string }>;
         conversationId?: string;
         workspaceContext?: unknown;
       };
 
-      if (!input.message || typeof input.message !== "string") {
+      const hasMessages =
+        Array.isArray(input.messages) && input.messages.length > 0;
+      const hasMessage =
+        typeof input.message === "string" && input.message.trim().length > 0;
+
+      if (!hasMessages && !hasMessage) {
         res.status(400).json({ error: "message_required" });
         return;
       }
@@ -271,6 +368,7 @@ async function main(): Promise<void> {
         sessionId: req.sessionID,
         payload: {
           message: input.message,
+          messages: hasMessages ? input.messages : undefined,
           conversationId: input.conversationId,
           workspaceContext: input.workspaceContext
         },

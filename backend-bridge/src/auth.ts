@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { Request } from "express";
 import { config } from "./config";
 import {
+  createAuditLog,
   getGoogleTokens,
   getGoogleUserById,
   saveGoogleTokens,
@@ -16,7 +17,9 @@ const googleScopes = [
   "profile",
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.send",
+  "https://www.googleapis.com/auth/gmail.compose",
   "https://www.googleapis.com/auth/calendar.readonly",
+  "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/drive.readonly"
 ];
 
@@ -211,6 +214,7 @@ export async function ensureFreshGoogleTokens(userId: string): Promise<{
 
   if (!response.ok) {
     const errorText = await response.text();
+    await createAuditLog(userId, "google_auth", {}, "FAILED", errorText);
     throw new Error(`Google token refresh failed: ${response.status} ${errorText}`);
   }
 
