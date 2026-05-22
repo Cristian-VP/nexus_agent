@@ -1,4 +1,5 @@
 import { google } from "googleapis";
+import pdfParse from "pdf-parse";
 
 export const TOOL_DEFINITIONS = [
   {
@@ -253,6 +254,27 @@ export const TOOL_DEFINITIONS = [
           },
         },
         required: ["to", "subject", "body"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "read_drive_file",
+      description:
+        "Lee el contenido de un archivo de Google Drive (PDF, TXT, MD, JSON) " +
+        "dado su ID. Para archivos PDF extrae el texto automaticamente. " +
+        "Usa esta herramienta despues de 'search_drive' cuando necesites " +
+        "conocer el contenido de un archivo encontrado.",
+      parameters: {
+        type: "object",
+        properties: {
+          fileId: {
+            type: "string",
+            description: "ID del archivo de Google Drive a leer.",
+          },
+        },
+        required: ["fileId"],
       },
     },
   },
@@ -663,7 +685,38 @@ export async function executeToolCall(
           "It should never reach executeToolCall directly."
       );
 
+    case "read_drive_file":
+      return executeReadDriveFile(accessToken, {
+        fileId: typeof args.fileId === "string" ? args.fileId : "",
+      });
+
     default:
       throw new Error(`Unknown tool function: ${functionName}`);
   }
+}
+
+async function executeReadDriveFile(
+  accessToken: string,
+  args: { fileId: string }
+) {
+  const auth = buildOAuthClient(accessToken);
+  const drive = google.drive({ version: "v3", auth });
+
+  const res = await drive.files.get(
+    { fileId: args.fileId, alt: "media" },
+    { responseType: "arraybuffer" }
+  );
+
+  const buffer = Buffer.from(res.data as ArrayBuffer);
+  const isPdf =
+    buffer[0] === 0x25 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x44 &&
+    buffer[3] === 0x46;
+
+  const content = isPdf
+    ? (await pdfParse(buffer)).text
+    : buffer.toString("utf-8");
+
+  return { fileId: args.fileId, content };
 }

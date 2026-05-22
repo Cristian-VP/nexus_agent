@@ -42,7 +42,9 @@ export async function proxyChatToOpenClaw(params: {
       "Si el usuario te pide redactar y enviar un correo, DEBES usar la herramienta " +
       "'gmail_request_send_email' sin dudarlo. El sistema se encargará de pedir la " +
       "confirmación humana de forma segura por ti. " +
-      "No inventes respuestas ni uses conocimiento general; siempre consulta las APIs con las tools.";
+      "No inventes respuestas ni uses conocimiento general; siempre consulta las APIs con las tools. " +
+      "Si encuentras un archivo en Drive mediante 'search_drive' y necesitas conocer " +
+      "su contenido, usa 'read_drive_file' con el ID del archivo.";
 
     if (params.payload.workspaceContext) {
       systemContent +=
